@@ -33,8 +33,9 @@ export class ApplicationModule implements NestModule {
 		consumer
 			.apply(SupabaseSessionMiddleware)
 			.exclude(
+				{ path: '', method: RequestMethod.GET },
+				{ path: '/health', method: RequestMethod.GET },
 				{ path: 'authorization/*path', method: RequestMethod.ALL },
-				{ path: 'health/*path', method: RequestMethod.ALL },
 				{ path: 'docs', method: RequestMethod.ALL },
 				{ path: 'docs/*path', method: RequestMethod.ALL },
 			)
