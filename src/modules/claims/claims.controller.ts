@@ -1,26 +1,16 @@
-import {
-  Controller,
-  Get,
-  Req,
-  UseGuards,
-  Logger,
-} from '@nestjs/common';
+import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common';
 import { ClaimsService } from './claims.service';
-import { SupabaseAuthGuard } from '../../common/auth/supabase-auth.guard';
+import { ClaimsQueryDto } from './dto/claims-query.dto';
 
-@Controller('make-server-df31eca9/claims')
-@UseGuards(SupabaseAuthGuard)
+@Controller('claims')
 export class ClaimsController {
-  private readonly logger = new Logger(ClaimsController.name);
-
   constructor(private readonly claimsService: ClaimsService) {}
 
   @Get()
-  async getClaims(@Req() req: Request) {
-    const user = req['user']; // injected by SupabaseAuthGuard
-
-    this.logger.log(`Fetching claims for user ${user.id}`);
-
-    return this.claimsService.getClaimsForUser(user);
+  async getClaims(
+    @Query() query: ClaimsQueryDto,
+    @Req() req: any,
+  ) {
+    return this.claimsService.getPaginatedClaims(req.user, query);
   }
 }

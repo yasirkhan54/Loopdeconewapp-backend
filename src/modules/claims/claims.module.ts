@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
 import { ClaimsController } from './claims.controller';
 import { ClaimsService } from './claims.service';
-import { SupabaseModule } from '../../common/supabase/supabase.module';
+import { SupabaseConfigurationsModule } from 'src/configurations';
+// import { UserManagementModule } from '../user-management/user-management.module';
 
 @Module({
-  imports: [SupabaseModule],
+  imports: [SupabaseConfigurationsModule, 
+    // UserManagementModule
+  ],
   controllers: [ClaimsController],
   providers: [ClaimsService],
 })

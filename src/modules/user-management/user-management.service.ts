@@ -20,6 +20,22 @@ export class UserManagementService {
 		private readonly supabaseConfigurationsService: SupabaseConfigurationsService,
 	) { }
 
+	// get user profile
+	async getByAuthUserId(authUserId: string) {
+		const { data, error } = await this.supabaseConfigurationsService
+			.getAdminClient()
+			.from('kv_store_df31eca9')
+			.select('value')
+			.eq('key', `user:${authUserId}`)
+			.single();
+
+		if (error || !data) {
+			throw new NotFoundException('User profile not found');
+		}
+
+		return data.value;
+	}
+
 	// Get Current User
 	async getCurrentUser(userId: string) {
 		try {
