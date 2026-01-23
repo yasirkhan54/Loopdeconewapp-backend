@@ -9,7 +9,7 @@ const bootstrap = async () => {
 
 	// Cors configuration
 	app.enableCors({
-		origin: ['http://localhost:3000'],
+		origin: ['http://localhost:3000', 'https://loopdeconewapp-frontend.vercel.app'],
 		credentials: true,
 	});
 
