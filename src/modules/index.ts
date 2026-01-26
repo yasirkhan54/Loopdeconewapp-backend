@@ -5,6 +5,7 @@ import { ReturnsModule } from './returns/returns.module';
 import { ClaimsModule } from './claims/claims.module';
 import { ProvidersModule } from './providers/providers.module';
 import { ResellersModule } from './resellers/resellers.module';
+import { RetailersModule } from './retailers/retailers.module';
 
 // Health module
 import { HealthModule } from './health/health.module';
@@ -15,5 +16,6 @@ export const MODULES = [
   ReturnsModule,
   ClaimsModule,
   ProvidersModule,
-  ResellersModule
+  ResellersModule,
+  RetailersModule
 ];
