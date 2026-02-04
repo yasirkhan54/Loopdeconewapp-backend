@@ -23,9 +23,17 @@ export interface Pagination {
   hasPreviousPage: boolean;
 }
 
+// export interface ResellersResponseDto {
+//   resellers: ReturnRow[];
+//   pagination: Pagination;
+//   timeout?: boolean;
+//   error?: string;
+// }
+
 export interface ResellersResponseDto {
   resellers: ReturnRow[];
-  pagination: Pagination;
+  pagination?: Pagination; // ✅ optional
   timeout?: boolean;
   error?: string;
 }
+
