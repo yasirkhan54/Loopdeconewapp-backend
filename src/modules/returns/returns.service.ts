@@ -113,8 +113,22 @@ export class ReturnsService {
         dbQuery = dbQuery.eq('retailer_id', userProfile.id);
       }
 
+      // if (userProfile.role === 'reseller') {
+      //   dbQuery = dbQuery.eq('assigned_reseller_id', userProfile.id);
+      // }
+
       if (userProfile.role === 'reseller') {
-        dbQuery = dbQuery.eq('assigned_reseller_id', userProfile.id);
+        const org = userProfile.organizationName;
+        const userId = userProfile.id;
+
+        const orCondition = [
+          `assigned_reseller_id.eq.${userId}`,
+          `assigned_reseller_name.eq.${org}`,
+          `shared_with_resellers.cs.{${org}}`,
+          `shared_with_resellers.cs.{${userId}}`,
+        ].join(',');
+
+        dbQuery = dbQuery.or(orCondition);
       }
 
       /**
