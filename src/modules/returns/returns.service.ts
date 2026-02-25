@@ -1,175 +1,103 @@
-
-import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, NotFoundException, Logger } from '@nestjs/common';
+import validator from 'validator';
 import { SupabaseConfigurationsService } from 'src/configurations';
-// import { UserManagementService } from '../user-management/user-management.service';
-import { ReturnsQueryDto } from './dto/returns-query.dto';
-import { ReturnRow, Pagination, ReturnsResponseDto } from './dto/returns-response.dto';
-import { UserProfile } from 'src/types';
+
+// Keep statuses aligned with Edge
+const VALID_STATUSES = [
+  'new',
+  'working',
+  'accepted',
+  'scheduled',
+  'completed',
+  'pending-assignment',
+  'pending_assignment',
+  'no-team-available',
+  'no_team_available',
+  'cancelled',
+  'donated',
+  'pending_retailer_review',
+  'pending-retailer-review',
+];
+
+type UserRole = 'admin' | 'retailer' | 'reseller';
 
 @Injectable()
 export class ReturnsService {
   private readonly logger = new Logger(ReturnsService.name);
-
   constructor(
+    
     private readonly supabase: SupabaseConfigurationsService,
-    // private readonly userManagementService: UserManagementService,
-  ) { }
+  ) {}
 
-  async getPaginatedReturns({
-    query,
-    user,
-  }: {
-    query: ReturnsQueryDto;
-    user: any;
-  }): Promise<ReturnsResponseDto> {
-    const {
-      page,
-      limit,
-      search,
-      status,
-      retailer,
-      reseller,
-      condition,
-    } = query;
-    // Validate pagination inputs and enforce sane defaults/limits
-    let safePage = Number(page) || 1;
-    let safeLimit = Number(limit) || 10;
-    if (safePage < 1) safePage = 1;
-    const MAX_LIMIT = 100;
-    if (safeLimit < 1) safeLimit = 10;
-    if (safeLimit > MAX_LIMIT) safeLimit = MAX_LIMIT;
+  // ---------- helpers (match Edge) ----------
 
-    const from = (safePage - 1) * safeLimit;
-    const to = from + safeLimit - 1;
-
-    const statuses = status
-      ? String(status).split(',').map(s => s.trim()).filter(Boolean)
-      : undefined;
-
-    this.logger.log(
-      `Returns query: page=${page}, limit=${limit}, search="${search}", status=${statuses}`,
-    );
-
-    try {
-      const client = this.supabase.getAdminClient();
-      const userProfile = (await this.getByAuthUserId(user.id)) as UserProfile;
-
-      // Select only the columns we need for the listing to reduce payload
-      let dbQuery = client
-        .from('kv_returns_df31eca9')
-        .select(
-          `key,value,order_id,customer_name,item_name,sku,retailer_name,status,retailer_id,assigned_reseller_id,assigned_reseller_name,condition,created_at`,
-          { count: 'exact' },
-        )
-        .order('created_at', { ascending: false });
-
-      /**
-       * 🔍 SEARCH (multi-column, OR-based)
-       */
-      if (search) {
-        const s = `%${String(search)}%`;
-        dbQuery = dbQuery.or([
-          `key.ilike.${s}`,
-          `order_id.ilike.${s}`,
-          `customer_name.ilike.${s}`,
-          `item_name.ilike.${s}`,
-          `sku.ilike.${s}`,
-          `retailer_name.ilike.${s}`,
-        ].join(','));
-      }
-
-      /**
-       * ✅ STATUS FILTER
-       */
-      if (statuses?.length) {
-        dbQuery = dbQuery.in('status', statuses);
-      }
-
-      /**
-       * 🏬 RETAILER FILTER
-       */
-      if (retailer) {
-        dbQuery = dbQuery.eq('retailer_name', retailer);
-      }
-
-      /**
-       * 🤝 RESELLER FILTER
-       */
-      if (reseller) {
-        dbQuery = dbQuery.eq('assigned_reseller_name', reseller);
-      }
-
-      /**
-       * 📦 CONDITION FILTER
-       */
-      if (condition) {
-        dbQuery = dbQuery.eq('condition', condition);
-      }
-
-      /**
-       * 🔐 ROLE-BASED ACCESS (SQL-LEVEL)
-       */
-      if (userProfile.role === 'retailer') {
-        dbQuery = dbQuery.eq('retailer_id', userProfile.id);
-      }
-
-      // if (userProfile.role === 'reseller') {
-      //   dbQuery = dbQuery.eq('assigned_reseller_id', userProfile.id);
-      // }
-
-      if (userProfile.role === 'reseller') {
-        const org = userProfile.organizationName;
-        const userId = userProfile.id;
-
-        const orCondition = [
-          `assigned_reseller_id.eq.${userId}`,
-          `assigned_reseller_name.eq.${org}`,
-          `shared_with_resellers.cs.{${org}}`,
-          `shared_with_resellers.cs.{${userId}}`,
-        ].join(',');
-
-        dbQuery = dbQuery.or(orCondition);
-      }
-
-      /**
-       * 📄 PAGINATION (LAST)
-       */
-      dbQuery = dbQuery.range(from, to);
-
-      /**
-       * 🚀 EXECUTE
-       */
-      const { data, count, error } = await dbQuery;
-
-      if (error) {
-        this.logger.error('Supabase error', error.message ?? error);
-        throw new InternalServerErrorException('Failed to query returns');
-      }
-
-      const total = Number(count ?? 0);
-      const returns = ((data as any[]) ?? []).map(row => row.value);
-      return {
-        returns,
-        pagination: {
-          page: safePage,
-          limit: safeLimit,
-          totalItems: total,
-          totalPages: Math.ceil(total / safeLimit),
-          hasNextPage: safePage * safeLimit < total,
-          hasPreviousPage: safePage > 1,
-        },
-      } as ReturnsResponseDto;
-
-    } catch (error: any) {
-      // Preserve NotFound for upstream handling (missing user profile)
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-
-      this.logger.error('Returns query failed', error?.message ?? String(error));
-      throw new InternalServerErrorException('Unable to fetch returns');
-    }
+  private validateStatuses(statuses: string[]): string[] {
+    return (statuses || []).filter((s) => VALID_STATUSES.includes(s));
   }
+
+  private sanitizeSearchString(search: string): string {
+    if (!search) return '';
+    let sanitized = search.trim();
+
+    // same concept as Edge
+    sanitized = validator.escape(sanitized);
+    sanitized = sanitized.replace(/[%_]/g, '');
+    sanitized = sanitized.slice(0, 100);
+    sanitized = validator.unescape(sanitized);
+
+    return sanitized;
+  }
+
+  private stripHeavyFields(returnData: any): any {
+    if (!returnData) return returnData;
+
+    const timelineSize = returnData.timeline?.length || 0;
+    const imagesCount = Array.isArray(returnData.images) ? returnData.images.length : 0;
+    const documentsCount = Array.isArray(returnData.documents) ? returnData.documents.length : 0;
+
+    const { timeline, images, documents, ...rest } = returnData;
+
+    rest.timelineCount = timelineSize;
+    rest.imagesCount = imagesCount;
+    rest.documentsCount = documentsCount;
+
+    return rest;
+  }
+
+  private resellerInMemoryVisible(params: {
+    r: any;
+    userId?: string;
+    orgName?: string;
+  }): boolean {
+    const { r, userId, orgName } = params;
+
+    // Always show if assigned to this reseller
+    if (userId && (r.assignedResellerId === userId)) return true;
+    if (orgName && (r.assignedReseller === orgName)) return true;
+
+    // Hide if accepted by someone else
+    if (r.acceptedBy && userId && r.acceptedBy !== userId) return false;
+
+    // Hide if hiddenFrom contains reseller
+    if (Array.isArray(r.hiddenFrom)) {
+      if (userId && r.hiddenFrom.includes(userId)) return false;
+      if (orgName && r.hiddenFrom.includes(orgName)) return false;
+    }
+
+    // Show if shared with this reseller org/user
+    const sharedWithOk =
+      (orgName && Array.isArray(r.sharedWith) && r.sharedWith.includes(orgName)) ||
+      (orgName &&
+        Array.isArray(r.sharedWithResellers) &&
+        (r.sharedWithResellers.includes(orgName) || (userId && r.sharedWithResellers.includes(userId)))) ||
+      (userId &&
+        Array.isArray(r.sharedWithResellers) &&
+        r.sharedWithResellers.includes(userId));
+
+    return Boolean(sharedWithOk);
+  }
+
+  // ---------- user profile (small behavior alignment) ----------
 
   async getByAuthUserId(authUserId: string) {
     const { data, error } = await this.supabase
@@ -177,12 +105,199 @@ export class ReturnsService {
       .from('kv_store_df31eca9')
       .select('value')
       .eq('key', `user:${authUserId}`)
-      .single();
+      .maybeSingle(); // closer to Edge "maybeSingle"
 
-    if (error || !data) {
+    if (error) {
+      throw new InternalServerErrorException('Failed to read user profile');
+    }
+    if (!data?.value) {
       throw new NotFoundException('User profile not found');
     }
 
     return data.value;
+  }
+
+  // ---------- main method: Edge-equivalent ----------
+
+  async getPaginatedReturns({
+    query,
+    user,
+  }: {
+    query: any; // ReturnsQueryDto
+    user: any;
+  }): Promise<any> {
+    const {
+      page,
+      limit,
+      search,
+      status,
+      retailerName,
+      resellerName,
+      condition,
+    } = query;
+
+    // Same pagination constraints as Edge
+    const safePage = Math.max(1, Number(page) || 1);
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 10));
+    const offset = (safePage - 1) * safeLimit;
+
+    const statuses = status
+      ? String(status).split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
+
+    const userProfile = await this.getByAuthUserId(user.id);
+
+    const userRole = userProfile.role as UserRole;
+    const userId = userProfile.id;
+    const orgName = userProfile.organizationName;
+
+    const client = this.supabase.getAdminClient();
+
+    // Build base queries like Edge: countQuery + dataQuery
+    let countQuery = client
+      .from('kv_returns_df31eca9')
+      .select('*', { count: 'exact', head: true });
+
+    let dataQuery = client
+      .from('kv_returns_df31eca9')
+      .select('value');
+
+    // ---------- Role-based filtering (match Edge) ----------
+
+    if (userRole === 'retailer' && orgName) {
+      // Edge uses retailer_name == organizationName
+      countQuery = countQuery.eq('retailer_name', orgName);
+      dataQuery = dataQuery.eq('retailer_name', orgName);
+    }
+
+    if (userRole === 'reseller' && (userId || orgName)) {
+      // Edge DB pre-filter only (final filtering happens in-memory)
+      const orCondition =
+        `assigned_reseller_name.eq.${orgName},` +
+        `assigned_reseller_id.eq.${userId},` +
+        `shared_with_resellers.cs.{${orgName}},` +
+        `shared_with_resellers.cs.{${userId}}`;
+
+      countQuery = countQuery.or(orCondition);
+      dataQuery = dataQuery.or(orCondition);
+    }
+
+    // ---------- Status filter (validated like Edge) ----------
+
+    if (statuses?.length) {
+      const valid = this.validateStatuses(statuses);
+      if (valid.length) {
+        countQuery = countQuery.in('status', valid);
+        dataQuery = dataQuery.in('status', valid);
+      }
+    }
+
+    // ---------- Additional filters (match Edge options) ----------
+    // Edge applies retailerName/resellerName as exact match on indexed name columns
+    if (retailerName) {
+      countQuery = countQuery.eq('retailer_name', retailerName);
+      dataQuery = dataQuery.eq('retailer_name', retailerName);
+    }
+
+    if (resellerName) {
+      countQuery = countQuery.eq('assigned_reseller_name', resellerName);
+      dataQuery = dataQuery.eq('assigned_reseller_name', resellerName);
+    }
+
+    if (condition) {
+      countQuery = countQuery.eq('condition', condition);
+      dataQuery = dataQuery.eq('condition', condition);
+    }
+
+    // ---------- Search filter (sanitized like Edge) ----------
+    if (search && String(search).trim()) {
+      const sanitized = this.sanitizeSearchString(String(search));
+      if (sanitized) {
+        const pattern = `%${sanitized}%`;
+
+        // include address + assigned_reseller_name like Edge
+        const orCondition =
+          `key.ilike.${pattern},` +
+          `order_id.ilike.${pattern},` +
+          `customer_name.ilike.${pattern},` +
+          `item_name.ilike.${pattern},` +
+          `address.ilike.${pattern},` +
+          `sku.ilike.${pattern},` +
+          `retailer_name.ilike.${pattern},` +
+          `assigned_reseller_name.ilike.${pattern}`;
+
+        countQuery = countQuery.or(orCondition);
+        dataQuery = dataQuery.or(orCondition);
+      }
+    }
+
+    // ---------- Execute count query ----------
+    const { count, error: countError } = await countQuery;
+
+    if (countError) {
+      this.logger.error('Count query error', countError);
+      throw new InternalServerErrorException('Failed to count returns');
+    }
+
+    const totalCount = Number(count || 0);
+
+    // ---------- Reseller special behavior (Edge-equivalent) ----------
+    if (userRole === 'reseller') {
+      // Edge does NOT DB paginate for reseller. It fetches limited rows then filters in-memory.
+      const fetchLimit = Math.min(safeLimit * 10, 500);
+
+      const { data: allData, error: dataError } = await dataQuery
+        .order('created_at', { ascending: false })
+        .limit(fetchLimit);
+
+      if (dataError) {
+        this.logger.error('Reseller data query error', dataError);
+        throw new InternalServerErrorException('Failed to fetch returns');
+      }
+
+      const allReturns = (allData || []).map((d: any) => this.stripHeavyFields(d.value));
+
+      const filteredReturns = allReturns.filter((r: any) =>
+        this.resellerInMemoryVisible({ r, userId, orgName }),
+      );
+
+      const paginated = filteredReturns.slice(offset, offset + safeLimit);
+
+      return {
+        returns: paginated,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          totalItems: filteredReturns.length,
+          totalPages: Math.ceil(filteredReturns.length / safeLimit),
+          hasNextPage: safePage * safeLimit < filteredReturns.length,
+          hasPreviousPage: safePage > 1,
+        },
+      };
+    }
+
+    // ---------- Non-reseller path: DB pagination like Edge ----------
+    const { data, error: dataError } = await dataQuery
+      .order('created_at', { ascending: false })
+      .range(offset, offset + safeLimit - 1);
+
+    if (dataError) {
+      this.logger.error('Data query error', dataError);
+      throw new InternalServerErrorException('Failed to fetch returns');
+    }
+
+    const returns = (data || []).map((d: any) => this.stripHeavyFields(d.value));
+
+    return {
+      returns,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        totalItems: totalCount,
+        totalPages: Math.ceil(totalCount / safeLimit),
+        hasNextPage: safePage * safeLimit < totalCount,
+        hasPreviousPage: safePage > 1,
+      },
+    };
   }
 }
