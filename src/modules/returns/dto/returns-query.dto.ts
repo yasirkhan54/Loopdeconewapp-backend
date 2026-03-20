@@ -27,7 +27,15 @@ export class ReturnsQueryDto {
 
   @IsOptional()
   @IsString()
+  retailerName?: string;
+
+  @IsOptional()
+  @IsString()
   reseller?: string;
+
+  @IsOptional()
+  @IsString()
+  resellerName?: string;
 
   @IsOptional()
   @IsString()

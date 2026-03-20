@@ -25,6 +25,10 @@ export interface Pagination {
 
 export interface ReturnsResponseDto {
   returns: ReturnRow[];
+  totalCount?: number;
+  page?: number;
+  limit?: number;
+  totalPages?: number;
   pagination: Pagination;
   timeout?: boolean;
   error?: string;

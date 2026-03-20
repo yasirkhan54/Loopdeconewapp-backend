@@ -64,24 +64,42 @@ export class ReturnsService {
     return rest;
   }
 
+  private buildOrCondition(parts: Array<string | undefined | null | false>): string | undefined {
+    const cleaned = parts
+      .map((part) => (typeof part === 'string' ? part.trim() : ''))
+      .filter(Boolean);
+
+    return cleaned.length ? cleaned.join(',') : undefined;
+  }
+
   private resellerInMemoryVisible(params: {
     r: any;
     userId?: string;
     orgName?: string;
+    profileName?: string;
   }): boolean {
-    const { r, userId, orgName } = params;
+    const { r, userId, orgName, profileName } = params;
 
     // Always show if assigned to this reseller
-    if (userId && (r.assignedResellerId === userId)) return true;
-    if (orgName && (r.assignedReseller === orgName)) return true;
+    if (userId && r.assignedResellerId === userId) return true;
+    if (profileName && (r.assignedReseller === profileName || r.assignedResellerName === profileName)) {
+      return true;
+    }
 
     // Hide if accepted by someone else
-    if (r.acceptedBy && userId && r.acceptedBy !== userId) return false;
+    if (r.acceptedBy) {
+      const acceptedByCurrentUser =
+        (userId && r.acceptedBy === userId) ||
+        (profileName && r.acceptedBy === profileName);
+
+      if (!acceptedByCurrentUser) return false;
+    }
 
     // Hide if hiddenFrom contains reseller
     if (Array.isArray(r.hiddenFrom)) {
       if (userId && r.hiddenFrom.includes(userId)) return false;
       if (orgName && r.hiddenFrom.includes(orgName)) return false;
+      if (profileName && r.hiddenFrom.includes(profileName)) return false;
     }
 
     // Show if shared with this reseller org/user
@@ -131,6 +149,8 @@ export class ReturnsService {
       limit,
       search,
       status,
+      retailer,
+      reseller,
       retailerName,
       resellerName,
       condition,
@@ -150,6 +170,9 @@ export class ReturnsService {
     const userRole = userProfile.role as UserRole;
     const userId = userProfile.id;
     const orgName = userProfile.organizationName;
+    const profileName = userProfile.name;
+    const retailerFilter = retailerName || retailer;
+    const resellerFilter = resellerName || reseller;
 
     const client = this.supabase.getAdminClient();
 
@@ -172,14 +195,17 @@ export class ReturnsService {
 
     if (userRole === 'reseller' && (userId || orgName)) {
       // Edge DB pre-filter only (final filtering happens in-memory)
-      const orCondition =
-        `assigned_reseller_name.eq.${orgName},` +
-        `assigned_reseller_id.eq.${userId},` +
-        `shared_with_resellers.cs.{${orgName}},` +
-        `shared_with_resellers.cs.{${userId}}`;
+      const orCondition = this.buildOrCondition([
+        userId ? `assigned_reseller_id.eq.${userId}` : undefined,
+        profileName ? `assigned_reseller_name.eq.${profileName}` : undefined,
+        orgName ? `shared_with_resellers.cs.{${orgName}}` : undefined,
+        userId ? `shared_with_resellers.cs.{${userId}}` : undefined,
+      ]);
 
-      countQuery = countQuery.or(orCondition);
-      dataQuery = dataQuery.or(orCondition);
+      if (orCondition) {
+        countQuery = countQuery.or(orCondition);
+        dataQuery = dataQuery.or(orCondition);
+      }
     }
 
     // ---------- Status filter (validated like Edge) ----------
@@ -194,14 +220,14 @@ export class ReturnsService {
 
     // ---------- Additional filters (match Edge options) ----------
     // Edge applies retailerName/resellerName as exact match on indexed name columns
-    if (retailerName) {
-      countQuery = countQuery.eq('retailer_name', retailerName);
-      dataQuery = dataQuery.eq('retailer_name', retailerName);
+    if (retailerFilter) {
+      countQuery = countQuery.eq('retailer_name', retailerFilter);
+      dataQuery = dataQuery.eq('retailer_name', retailerFilter);
     }
 
-    if (resellerName) {
-      countQuery = countQuery.eq('assigned_reseller_name', resellerName);
-      dataQuery = dataQuery.eq('assigned_reseller_name', resellerName);
+    if (resellerFilter) {
+      countQuery = countQuery.eq('assigned_reseller_name', resellerFilter);
+      dataQuery = dataQuery.eq('assigned_reseller_name', resellerFilter);
     }
 
     if (condition) {
@@ -258,19 +284,25 @@ export class ReturnsService {
       const allReturns = (allData || []).map((d: any) => this.stripHeavyFields(d.value));
 
       const filteredReturns = allReturns.filter((r: any) =>
-        this.resellerInMemoryVisible({ r, userId, orgName }),
+        this.resellerInMemoryVisible({ r, userId, orgName, profileName }),
       );
 
       const paginated = filteredReturns.slice(offset, offset + safeLimit);
+      const resellerTotalCount = filteredReturns.length;
+      const resellerTotalPages = Math.ceil(resellerTotalCount / safeLimit);
 
       return {
         returns: paginated,
+        totalCount: resellerTotalCount,
+        page: safePage,
+        limit: safeLimit,
+        totalPages: resellerTotalPages,
         pagination: {
           page: safePage,
           limit: safeLimit,
-          totalItems: filteredReturns.length,
-          totalPages: Math.ceil(filteredReturns.length / safeLimit),
-          hasNextPage: safePage * safeLimit < filteredReturns.length,
+          totalItems: resellerTotalCount,
+          totalPages: resellerTotalPages,
+          hasNextPage: safePage * safeLimit < resellerTotalCount,
           hasPreviousPage: safePage > 1,
         },
       };
@@ -287,14 +319,19 @@ export class ReturnsService {
     }
 
     const returns = (data || []).map((d: any) => this.stripHeavyFields(d.value));
+    const totalPages = Math.ceil(totalCount / safeLimit);
 
     return {
       returns,
+      totalCount,
+      page: safePage,
+      limit: safeLimit,
+      totalPages,
       pagination: {
         page: safePage,
         limit: safeLimit,
         totalItems: totalCount,
-        totalPages: Math.ceil(totalCount / safeLimit),
+        totalPages,
         hasNextPage: safePage * safeLimit < totalCount,
         hasPreviousPage: safePage > 1,
       },
