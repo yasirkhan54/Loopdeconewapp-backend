@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, InternalServerErrorException, NotFoundException, Logger } from '@nestjs/common';
 import validator from 'validator';
 import { SupabaseConfigurationsService } from 'src/configurations';
 
@@ -133,6 +133,84 @@ export class ReturnsService {
     }
 
     return data.value;
+  }
+
+  private canAccessReturn(params: {
+    returnData: any;
+    userRole: UserRole;
+    userId?: string;
+    orgName?: string;
+    profileName?: string;
+  }): boolean {
+    const { returnData, userRole, userId, orgName, profileName } = params;
+
+    if (userRole === 'admin') return true;
+
+    if (userRole === 'retailer') {
+      return Boolean(
+        (userId && (returnData.retailerId === userId || returnData.submittedBy === userId)) ||
+        (orgName && returnData.retailer === orgName) ||
+        (profileName && returnData.retailer === profileName),
+      );
+    }
+
+    if (userRole === 'reseller') {
+      if (userId && returnData.assignedResellerId === userId) return true;
+      if (orgName && returnData.assignedReseller === orgName) return true;
+      if (profileName && (
+        returnData.assignedReseller === profileName ||
+        returnData.assignedResellerName === profileName
+      )) {
+        return true;
+      }
+
+      return this.resellerInMemoryVisible({
+        r: returnData,
+        userId,
+        orgName,
+        profileName,
+      });
+    }
+
+    return false;
+  }
+
+  async getReturnById({
+    id,
+    user,
+  }: {
+    id: string;
+    user: any;
+  }): Promise<{ return: any }> {
+    const userProfile = await this.getByAuthUserId(user.id);
+    const userRole = userProfile.role as UserRole;
+    const userId = userProfile.id;
+    const orgName = userProfile.organizationName;
+    const profileName = userProfile.name;
+
+    const { data, error } = await this.supabase
+      .getAdminClient()
+      .from('kv_returns_df31eca9')
+      .select('value')
+      .eq('key', `return:${id}`)
+      .maybeSingle();
+
+    if (error) {
+      this.logger.error('Return detail query error', error);
+      throw new InternalServerErrorException('Failed to fetch return');
+    }
+
+    const returnData = data?.value;
+
+    if (!returnData) {
+      throw new NotFoundException('Return not found');
+    }
+
+    if (!this.canAccessReturn({ returnData, userRole, userId, orgName, profileName })) {
+      throw new ForbiddenException('This return is not available to you');
+    }
+
+    return { return: returnData };
   }
 
   // ---------- main method: Edge-equivalent ----------
